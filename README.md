@@ -89,6 +89,9 @@ docker compose up --build
 
 Open http://localhost:8000 (API docs at http://localhost:8000/docs). Compose passes the key from `.env` to the container and keeps documents, chats and tickets in the `support-data` volume. The image itself never contains `.env` (see `.dockerignore`), so starting it without the key, for example with Docker Desktop's Run button, stops with "GEMINI_API_KEY is not set". Without Compose: `docker build -t support-agent .`, then `docker run -p 8000:8000 --env-file .env -v support-data:/app/backend/data support-agent` (the key must be unquoted there, because `--env-file` keeps quotes). The embedding model is downloaded during the build.
 
+### Deploy on Render
+Create a web service from this repo with **Language: Docker**, leaving Root Directory, Build Command and Start Command empty (the Dockerfile builds everything and listens on Render's `PORT`), and add `GEMINI_API_KEY` under Environment. Tested in Docker with the free plan's limits (512 MB RAM, 0.1 CPU): it starts listening in ~30 s, and uploading a sample document and asking a question peaked at ~480 MB. The free plan has no persistent disk, so documents, chats and tickets are wiped whenever the service restarts, redeploys or sleeps after 15 idle minutes. Upload the samples again after a cold start.
+
 ### Environment variables
 | Variable | Required | Purpose |
 |---|---|---|
@@ -171,4 +174,4 @@ Streamed responses · DOCX upload · conversation memory and follow-up context �
 - Memory covers the last 20 messages of the current conversation only; it doesn't carry over to a new conversation.
 - Every message costs at least one Gemini call, and questions about the docs two or three (search, maybe a second search, then answer). There's no similarity shortcut any more, see above.
 - Grounding relies on the model calling the search tool before stating company facts (instructed, and sources are only shown from real search results); a model that answered from its own knowledge without searching wouldn't be caught automatically.
-- Not deployed to a public host. It runs locally or in Docker.
+- On Render's free plan, data resets on every restart, redeploy or sleep (no persistent disk), and memory peaks near the 512 MB limit, so large uploads may not fit there.
