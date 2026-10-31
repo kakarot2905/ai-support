@@ -1,0 +1,9 @@
+# Keep secrets, local data and host-built folders out of the image.
+.env
+.venv
+.git
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+backend/data
+frontend/dist
