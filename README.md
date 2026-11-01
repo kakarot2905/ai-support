@@ -4,6 +4,20 @@ A support chatbot that answers customer questions **only from uploaded company d
 
 Stack: React (Vite) · FastAPI · LangGraph · Google Gemini · ChromaDB · SQLite
 
+**Live demo:** https://ai-support-1-ppxw.onrender.com
+
+[![Video walkthrough: click to play](docs/walkthrough.jpg)](docs/walkthrough.mp4)
+
+*Video walkthrough (1:52, narrated): uploading help docs, a streamed answer with its source, escalation to a ticket, and the Tickets page. Click the image to play it.*
+
+> **The live demo starts empty and forgets everything.** It runs on Render's free plan:
+> - After 15 minutes without visitors the server sleeps, and the next visit takes about 30–60 s to load.
+> - Documents, chats and tickets are wiped whenever the server sleeps, restarts or is redeployed. Upload `samples/Return_Policy.txt` and `samples/FAQ.txt` in the Knowledge Base tab before chatting.
+
+**Why the live demo can't keep data.** The app stores everything as files in `backend/data/`: the SQLite database `app.db` (the document list, conversations, messages and tickets) and the Chroma index `chroma/` (the embedded document chunks the bot searches). Render's free web services have an *ephemeral filesystem*: each restart, redeploy or wake-up from sleep starts a fresh container from the image, so files written while it ran are gone. Render keeps files only on a persistent disk, and disks can only be attached to paid instances.
+
+A hosted database wouldn't fix this on its own. The assignment specifies SQLite. Moving only the SQLite data to a hosted Postgres would keep chats and tickets, but the Chroma vectors would still be wiped. Render's free Postgres also expires after 30 days. The fix is a paid instance with a disk mounted at `/app/backend/data`, which needs no code changes. Run locally or with Docker (below), the data survives restarts.
+
 ## Architecture
 
 ```
@@ -49,48 +63,74 @@ graph TD;
 
 Company facts must come from search results; the conversation is used for follow-ups, things the customer said ("my name is…", "I bought headphones") and small talk, which need no search.
 
-**Escalation** = create a ticket (one-line summary + category, written by the model in its tool call or by a separate summary call for keyword escalations; customer contact from the pre-chat form; status `Open`), link it to the conversation, mark the conversation `escalated`, log a simulated email, and tell the customer the ticket ID.
+**Escalation** = create a ticket (one-line summary + category, written by the model in its tool call or by a separate summary call for keyword escalations; customer contact from the pre-chat form; status `Open`), link it to the conversation, mark the conversation `escalated`, email the customer a confirmation with the ticket number (see [Ticket emails](#ticket-emails)), and tell them the ticket ID in the chat.
 
-## Setup
+## Run it yourself
 
-Prerequisites: Python 3.10+, Node 20.19+ or 22.12+ (required by Vite 7), a free Gemini API key from https://aistudio.google.com/apikey.
+Both ways need a free Gemini API key from https://aistudio.google.com/apikey. Choose **A** for development: two terminals, and code changes reload live. Choose **B** to just run it: one command, no Python or Node install.
 
-```bash
-# 1. Environment
-cp .env.example .env          # then put your key in GEMINI_API_KEY
+### A. Run locally
 
-# 2. Backend (from the project root)
-python -m venv .venv
-.venv\Scripts\activate         # Windows   (macOS/Linux: source .venv/bin/activate)
-pip install -r requirements.txt
-cd backend
-uvicorn main:app --reload      # http://localhost:8000, API docs at http://localhost:8000/docs
+Prerequisites: Git, Python 3.10+, and Node 20.19+ or 22.12+ (required by Vite 7).
 
-# 3. Frontend (second terminal)
-cd frontend
-npm install
-npm run dev                    # http://localhost:5173
-```
+1. **Get the code**
+   ```bash
+   git clone https://github.com/kakarot2905/ai-support.git
+   cd ai-support
+   ```
+2. **Add your API key.** Copy the example file, then open `.env` and fill in `GEMINI_API_KEY=` (no quotes needed):
+   ```bash
+   cp .env.example .env           # Windows cmd: copy .env.example .env
+   ```
+3. **Start the backend** in a terminal, from the project root:
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate         # macOS/Linux: source .venv/bin/activate
+   pip install -r requirements.txt
+   cd backend
+   uvicorn main:app --reload
+   ```
+   It runs on http://localhost:8000, with interactive API docs at http://localhost:8000/docs. If the key is missing, it refuses to start and prints how to fix it.
+4. **Start the frontend** in a second terminal, from the project root:
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+   Open http://localhost:5173.
+5. **Try it:** upload `samples/Return_Policy.txt` and `samples/FAQ.txt` in the Knowledge Base tab. In Chat, ask *"How long do I have to return an item?"*, then *"I was charged twice for my last order and need a refund now."*, then open the Tickets tab.
 
-The first upload downloads the ~80 MB embedding model once (to `~/.cache/chroma`).
-If `GEMINI_API_KEY` is missing, the backend refuses to start and prints how to fix it.
-
-**Try it:** upload `samples/Return_Policy.txt` and `samples/FAQ.txt` in the Knowledge Base tab. In Chat, ask *"How long do I have to return an item?"*, then *"I was charged twice for my last order and need a refund now."*, then open the Tickets tab.
+Data is saved in `backend/data/` (SQLite + Chroma), so it survives restarts. Delete that folder while the backend is stopped to start fresh. The first upload downloads the ~80 MB embedding model once (to `~/.cache/chroma`).
 
 **Tests:** `cd backend && pytest` (chunking, escalation rules, stream parsing, and the agent graph with Gemini scripted: search loop, not found, model-created ticket, keyword guardrail and the search limit; no API key or network needed).
 
-### Run with Docker (alternative)
-One container serves the API and the built React app on port 8000:
+### B. Run with Docker
 
-```bash
-cp .env.example .env          # then put your key in GEMINI_API_KEY
-docker compose up --build
-```
+Prerequisites: Docker Desktop (Windows/macOS) or Docker Engine with the Compose plugin (Linux). Start Docker Desktop and wait until it shows the engine as running.
 
-Open http://localhost:8000 (API docs at http://localhost:8000/docs). Compose passes the key from `.env` to the container and keeps documents, chats and tickets in the `support-data` volume. The image itself never contains `.env` (see `.dockerignore`), so starting it without the key, for example with Docker Desktop's Run button, stops with "GEMINI_API_KEY is not set". Without Compose: `docker build -t support-agent .`, then `docker run -p 8000:8000 --env-file .env -v support-data:/app/backend/data support-agent` (the key must be unquoted there, because `--env-file` keeps quotes). The embedding model is downloaded during the build.
+1. **Get the code and add your key:** steps 1 and 2 above.
+2. **Build and start**, from the project root:
+   ```bash
+   docker compose up --build
+   ```
+   The first build takes a few minutes. It builds the React app, installs the Python packages and downloads the embedding model into the image. The app is ready when the log shows `Uvicorn running on http://0.0.0.0:8000`.
+3. **Open http://localhost:8000.** One container serves both the UI and the API, with API docs at http://localhost:8000/docs.
+
+| To… | Run |
+|---|---|
+| Stop | `Ctrl+C`, or `docker compose down` |
+| Start again without rebuilding | `docker compose up` |
+| Run in the background, then follow the logs | `docker compose up -d`, then `docker compose logs -f` |
+| Apply code changes | `docker compose up --build` |
+| Delete all documents, chats and tickets | `docker compose down -v` |
+
+- **Data** lives in the `support-data` Docker volume, so it survives `docker compose down` and rebuilds. Only `down -v` deletes it.
+- **The key** is never copied into the image (`.env` is listed in `.dockerignore`); Compose passes it in when the container starts. If you start the image some other way without the key, for example with Docker Desktop's Run button, it stops with "GEMINI_API_KEY is not set".
+- **Port 8000 already in use** (for example by the backend from A)? Stop that first, or change the mapping in `compose.yaml` to `"8080:8000"` and open http://localhost:8080.
+- **Without Compose:** `docker build -t support-agent .`, then `docker run -p 8000:8000 --env-file .env -v support-data:/app/backend/data support-agent`. Here the key in `.env` must be unquoted, because `--env-file` keeps quotes as part of the value.
 
 ### Deploy on Render
-Create a web service from this repo with **Language: Docker**, leaving Root Directory, Build Command and Start Command empty (the Dockerfile builds everything and listens on Render's `PORT`), and add `GEMINI_API_KEY` under Environment. Tested in Docker with the free plan's limits (512 MB RAM, 0.1 CPU): it starts listening in ~30 s, and uploading a sample document and asking a question peaked at ~480 MB. The free plan has no persistent disk, so documents, chats and tickets are wiped whenever the service restarts, redeploys or sleeps after 15 idle minutes. Upload the samples again after a cold start.
+Create a web service from this repo with **Language: Docker**, leaving Root Directory, Build Command and Start Command empty (the Dockerfile builds everything and listens on Render's `PORT`), and add `GEMINI_API_KEY` under Environment (plus `BREVO_API_KEY` and `MAIL_FROM` for ticket emails). Tested in Docker with the free plan's limits (512 MB RAM, 0.1 CPU): it starts listening in ~30 s, and uploading a sample document and asking a question peaked at ~480 MB. On the free plan, data doesn't survive a restart (see the note under the live demo link at the top). To keep it, use a paid instance and add a disk with mount path `/app/backend/data`.
 
 ### Environment variables
 | Variable | Required | Purpose |
@@ -98,7 +138,18 @@ Create a web service from this repo with **Language: Docker**, leaving Root Dire
 | `GEMINI_API_KEY` | yes | Gemini API key |
 | `GEMINI_MODEL` | no | Model name, default `gemini-flash-latest` |
 | `GEMINI_THINKING_LEVEL` | no | Default `low` (first streamed token ~2s instead of ~10s on Gemini 3). Set it empty for Gemini 2.5 models, which reject it |
+| `BREVO_API_KEY` | no | Brevo API key, for real ticket emails (see below) |
+| `MAIL_FROM` | no | Sender address verified in Brevo |
 | `VITE_API_URL` | no (frontend) | Backend URL. Default: `http://localhost:8000` in dev; a production build (Docker) calls the server it was loaded from |
+
+### Ticket emails
+When a ticket is created, the customer gets an email with the ticket number, summary, category and status, sent through [Brevo](https://www.brevo.com)'s HTTPS API (`backend/mailer.py`). To turn it on:
+1. Create a free Brevo account.
+2. Add a sender address under **Settings → Senders, Domains & Dedicated IPs → Senders**, and confirm it with the code Brevo emails to it.
+3. Create an API key under **Settings → SMTP & API → API keys** (https://app.brevo.com/settings/keys/api) and copy it.
+4. Set `BREVO_API_KEY` and `MAIL_FROM` (the verified sender) in `.env`, or under Environment on Render, and restart.
+
+Without them, the email is only written to the backend log as `[SIMULATED EMAIL]`. Why Brevo: Render's free plan blocks the SMTP ports (25, 465, 587), so Gmail SMTP can't send from there. Brevo can send to any address with only a verified sender, while Resend's free testing sender can only send to your own address until you verify a domain. The email is sent in a background thread, so it doesn't slow the chat reply, and a failed send is logged with Brevo's reason but never stops the ticket from being created. Emails from a free address like Gmail may land in spam; a sender on your own domain avoids that.
 
 ## API
 
@@ -162,7 +213,7 @@ Why:
 - **Sync FastAPI endpoints** (run in FastAPI's thread pool), because the Gemini SDK call and Chroma are blocking. Simpler than mixing async and sync clients.
 
 ## Bonus items done
-Streamed responses · DOCX upload · conversation memory and follow-up context · ticket status workflow (dropdown on the Tickets page) · simulated email notification (logged by the backend) · keyword-based frustration detection · unit tests · 10 MB upload limit with 413 + validation with proper status codes · Dockerfile (one container for the API and the built UI).
+Streamed responses · DOCX upload · conversation memory and follow-up context · ticket status workflow (dropdown on the Tickets page) · ticket confirmation email to the customer (Brevo; logged instead when not configured) · keyword-based frustration detection · unit tests · 10 MB upload limit with 413 + validation with proper status codes · Dockerfile (one container for the API and the built UI).
 
 ## Known limitations / with more time
 - No authentication. Anyone can view all tickets and upload documents.

@@ -7,3 +7,4 @@
 **/.pytest_cache
 backend/data
 frontend/dist
+docs

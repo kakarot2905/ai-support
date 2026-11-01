@@ -1,4 +1,5 @@
 """Unit tests for chunking, escalation rules, answer-stream parsing and the agent graph. Run: cd backend && pytest"""
+import json
 import os
 
 os.environ.setdefault("GEMINI_API_KEY", "test-key")  # llm.py needs a key to import; no API calls are made
@@ -69,9 +70,11 @@ def test_stream_text_that_starts_like_not_found_is_still_shown():
 
 def test_agent_graph_tools_routes_and_memory(monkeypatch, tmp_path):
     """Runs the LangGraph agent with Gemini scripted and search faked, on a throwaway database."""
-    import agent, db, kb, llm
+    import agent, db, kb, llm, mailer
     from google.genai import types
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
+    emails = []  # tickets emailed; never sends real mail, even with BREVO_API_KEY in .env
+    monkeypatch.setattr(mailer, "send_ticket_email", emails.append)
     db.init()
     monkeypatch.setattr(kb, "search", lambda query: [{"text": "Returns within 30 days.", "source": "Policy.txt",
                                                        "similarity": 0.8}])
@@ -118,13 +121,40 @@ def test_agent_graph_tools_routes_and_memory(monkeypatch, tmp_path):
     _, done = run("yes please", turn(calls=[call(llm.TICKET_TOOL, summary="Wants the product list", category="general")]))
     ticket = db.query_one("SELECT * FROM tickets WHERE id = ?", (done["ticket_id"],))
     assert ticket["summary"] == "Wants the product list" and ticket["category"] == "general"
+    assert [t["id"] for t in emails] == [ticket["id"]]
 
     # Keyword guardrail: escalates before the model is called, reusing the open ticket.
     turns_so_far = len(model_inputs)
     _, done = run("I was charged twice")
     assert len(model_inputs) == turns_so_far and "already with our team" in done["reply"]
+    assert len(emails) == 1  # reusing the open ticket sends no second email
 
     # A model that keeps searching is stopped after MAX_SEARCHES rounds.
     searching = turn(calls=[call(llm.SEARCH_TOOL, query="anything")])
     _, done = run("loop forever", *[searching] * (agent.MAX_SEARCHES + 1))
     assert "couldn't find that" in done["reply"] and len(model_inputs) == turns_so_far + agent.MAX_SEARCHES + 1
+
+
+def test_ticket_email_goes_to_the_customer_through_brevo(monkeypatch):
+    import mailer
+    sent = []
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+    monkeypatch.setattr(mailer.urllib.request, "urlopen", lambda req, timeout: sent.append(req) or Response())
+    monkeypatch.setattr(mailer.threading, "Thread", lambda target, args, daemon: type("T", (), {"start": lambda self: target(*args)})())
+    monkeypatch.setenv("BREVO_API_KEY", "key-123")
+    monkeypatch.setenv("MAIL_FROM", "support@shop.example")
+    mailer.send_ticket_email({"id": 7, "customer_name": "Asha", "customer_email": "asha@example.com",
+                              "summary": "Charged twice", "category": "billing", "status": "Open"})
+    (req,) = sent
+    body = json.loads(req.data)
+    assert req.full_url == mailer.BREVO_URL and req.get_header("Api-key") == "key-123"
+    assert body["to"] == [{"email": "asha@example.com", "name": "Asha"}]
+    assert body["sender"]["email"] == "support@shop.example" and "#7" in body["subject"]
+    assert "Charged twice" in body["textContent"]
+
+    monkeypatch.delenv("BREVO_API_KEY")  # not configured: only logged, nothing sent
+    mailer.send_ticket_email({"id": 8, "customer_name": "Asha", "customer_email": "asha@example.com",
+                              "summary": "x", "category": "general", "status": "Open"})
+    assert len(sent) == 1

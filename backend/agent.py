@@ -25,6 +25,7 @@ import db
 import escalation
 import kb
 import llm
+import mailer
 
 log = logging.getLogger("support")
 
@@ -223,9 +224,9 @@ def create_ticket(conv: dict, reason: str, category: str | None = None,
         (conv["id"], summary, conv["customer_name"], conv["customer_email"], category, reason, db.now()),
     )
     db.execute("UPDATE conversations SET status = 'escalated' WHERE id = ?", (conv["id"],))
-    log.info("[SIMULATED EMAIL] To: support@company.example | New ticket #%s (%s) from %s: %s",
-             ticket_id, category, conv["customer_email"], summary)
-    return db.query_one("SELECT * FROM tickets WHERE id = ?", (ticket_id,)), True
+    ticket = db.query_one("SELECT * FROM tickets WHERE id = ?", (ticket_id,))
+    mailer.send_ticket_email(ticket)
+    return ticket, True
 
 
 def escalate(conv: dict, reason: str, category: str | None = None, summary: str | None = None) -> dict:
